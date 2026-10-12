@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -29,7 +30,9 @@ import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -48,14 +51,20 @@ object CryptoManager {
     private const val TAG_LENGTH_BIT = 128
     private const val IV_LENGTH_BYTE = 12
 
-    private fun deriveKey(password: String): SecretKey {
+    fun hashPin(pin: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        val keyBytes = digest.digest(password.toByteArray(Charsets.UTF_8))
+        val hash = digest.digest(pin.trim().toByteArray(Charsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }.take(6)
+    }
+
+    private fun deriveKey(pin: String): SecretKey {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val keyBytes = digest.digest(pin.trim().toByteArray(Charsets.UTF_8))
         return SecretKeySpec(keyBytes, "AES")
     }
 
-    fun encrypt(data: ByteArray, password: String): ByteArray {
-        val key = deriveKey(password)
+    fun encrypt(data: ByteArray, pin: String): ByteArray {
+        val key = deriveKey(pin)
         val iv = ByteArray(IV_LENGTH_BYTE).apply { SecureRandom().nextBytes(this) }
         val cipher = Cipher.getInstance(ALGORITHM)
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH_BIT, iv))
@@ -67,14 +76,14 @@ object CryptoManager {
             .array()
     }
 
-    fun decrypt(encryptedPayload: ByteArray, password: String): ByteArray {
+    fun decrypt(encryptedPayload: ByteArray, pin: String): ByteArray {
         val buffer = ByteBuffer.wrap(encryptedPayload)
         val iv = ByteArray(IV_LENGTH_BYTE)
         buffer.get(iv)
         val ciphertext = ByteArray(buffer.remaining())
         buffer.get(ciphertext)
 
-        val key = deriveKey(password)
+        val key = deriveKey(pin)
         val cipher = Cipher.getInstance(ALGORITHM)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH_BIT, iv))
         return cipher.doFinal(ciphertext)
@@ -84,13 +93,15 @@ object CryptoManager {
 class MainActivity : AppCompatActivity() {
 
     private lateinit var toggleMode: MaterialButtonToggleGroup
-    private lateinit var etPassword: EditText
+    private lateinit var etPin: EditText
     private lateinit var tvStatus: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var layoutSend: View
     private lateinit var layoutReceive: View
     private lateinit var ivQrDisplay: ImageView
     private lateinit var previewView: PreviewView
+    private lateinit var btnPickFile: Button
+    private lateinit var btnStopSend: Button
 
     private var transmissionJob: Job? = null
     private val qrWriter = QRCodeWriter()
@@ -109,13 +120,15 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         toggleMode = findViewById(R.id.toggleMode)
-        etPassword = findViewById(R.id.etPassword)
+        etPin = findViewById(R.id.etPin)
         tvStatus = findViewById(R.id.tvStatus)
         progressBar = findViewById(R.id.progressBar)
         layoutSend = findViewById(R.id.layoutSend)
         layoutReceive = findViewById(R.id.layoutReceive)
         ivQrDisplay = findViewById(R.id.ivQrDisplay)
         previewView = findViewById(R.id.previewView)
+        btnPickFile = findViewById(R.id.btnPickFile)
+        btnStopSend = findViewById(R.id.btnStopSend)
 
         val filePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
             if (res.resultCode == Activity.RESULT_OK) {
@@ -123,9 +136,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<Button>(R.id.btnPickFile).setOnClickListener {
-            if (etPassword.text.isNullOrBlank()) {
-                Toast.makeText(this, "يرجى كتابة كلمة مرور التشفير أولاً", Toast.LENGTH_SHORT).show()
+        btnPickFile.setOnClickListener {
+            if (etPin.text.isNullOrBlank()) {
+                Toast.makeText(this, "يرجى إدخال رمز الأمان (PIN) أولاً", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -133,6 +146,10 @@ class MainActivity : AppCompatActivity() {
                 type = "*/*"
             }
             filePicker.launch(intent)
+        }
+
+        btnStopSend.setOnClickListener {
+            stopSending()
         }
 
         toggleMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
@@ -150,16 +167,18 @@ class MainActivity : AppCompatActivity() {
         layoutSend.visibility = View.VISIBLE
         progressBar.visibility = View.GONE
         tvStatus.text = "وضع الإرسال: اختر ملفاً للبدء"
+        tvStatus.setTextColor(Color.parseColor("#10B981"))
         setScreenBrightness(1.0f)
     }
 
     private fun switchToReceiveMode() {
-        transmissionJob?.cancel()
+        stopSending()
         layoutSend.visibility = View.GONE
         layoutReceive.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
         progressBar.progress = 0
-        tvStatus.text = "وضع الاستقبال: وجّه الكاميرا الخلفية نحو شاشة المرسل"
+        tvStatus.text = "بانتظار توجيه الكاميرا ومطابقة الرمز..."
+        tvStatus.setTextColor(Color.parseColor("#38BDF8"))
         setScreenBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -177,9 +196,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun startSending(uri: Uri) {
         transmissionJob?.cancel()
+        btnStopSend.isEnabled = true
+        btnPickFile.isEnabled = false
+
         transmissionJob = lifecycleScope.launch(Dispatchers.Default) {
             val (fileName, fileBytes) = readFileData(uri)
-            val password = etPassword.text.toString()
+            val pin = etPin.text.toString()
+            val pinHash = CryptoManager.hashPin(pin)
 
             withContext(Dispatchers.Main) { tvStatus.text = "جاري تشفير الملف..." }
 
@@ -189,15 +212,21 @@ class MainActivity : AppCompatActivity() {
                 write(nameBytes)
                 write(fileBytes)
             }
-            val encryptedData = CryptoManager.encrypt(packedStream.toByteArray(), password)
+            val encryptedData = CryptoManager.encrypt(packedStream.toByteArray(), pin)
 
-            val chunkSize = 180
+            // حجم كتلة خفيف لإنتاج كود QR قليل التعقيد وسهل المسح
+            val chunkSize = 120
             val totalChunks = ceil(encryptedData.size.toDouble() / chunkSize).toInt()
             val fileId = UUID.randomUUID().toString().substring(0, 4)
 
             withContext(Dispatchers.Main) {
                 tvStatus.text = "يبث الآن: $fileName ($totalChunks حزمة)"
             }
+
+            val hints = mapOf(
+                EncodeHintType.MARGIN to 1,
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.L
+            )
 
             while (isActive) {
                 for (index in 0 until totalChunks) {
@@ -207,22 +236,33 @@ class MainActivity : AppCompatActivity() {
                     val chunk = encryptedData.copyOfRange(from, to)
                     val encodedPayload = Base64.encodeToString(chunk, Base64.NO_WRAP)
 
-                    val packet = "$fileId|$index|$totalChunks|$encodedPayload"
-                    val bmp = generateQrBitmap(packet)
+                    // البنية: OPT | رمز المطابقة | معرف الملف | الرقم | الإجمالي | البيانات
+                    val packet = "OPT|$pinHash|$fileId|$index|$totalChunks|$encodedPayload"
+                    val bmp = generateQrBitmap(packet, hints)
 
                     withContext(Dispatchers.Main) { ivQrDisplay.setImageBitmap(bmp) }
-                    delay(90)
+                    delay(220) // معدل عرض مستقر لقراءة الكاميرا بدقة
                 }
             }
         }
     }
 
-    private fun generateQrBitmap(content: String): Bitmap {
-        val matrix = qrWriter.encode(content, BarcodeFormat.QR_CODE, 512, 512)
+    private fun stopSending() {
+        transmissionJob?.cancel()
+        transmissionJob = null
+        btnStopSend.isEnabled = false
+        btnPickFile.isEnabled = true
+        ivQrDisplay.setImageDrawable(null)
+        tvStatus.text = "تم إيقاف الإرسال"
+        tvStatus.setTextColor(Color.parseColor("#94A3B8"))
+    }
+
+    private fun generateQrBitmap(content: String, hints: Map<EncodeHintType, Any>): Bitmap {
+        val matrix = qrWriter.encode(content, BarcodeFormat.QR_CODE, 512, 512, hints)
         val bmp = Bitmap.createBitmap(512, 512, Bitmap.Config.RGB_565)
         for (x in 0 until 512) {
             for (y in 0 until 512) {
-                bmp.setPixel(x, y, if (matrix[x, y]) -0x1000000 else -0x1)
+                bmp.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
             }
         }
         return bmp
@@ -282,13 +322,33 @@ class MainActivity : AppCompatActivity() {
     @Synchronized
     private fun handleScannedData(packet: String) {
         val parts = packet.split("|")
-        if (parts.size != 4) return
+        if (parts.size != 6 || parts[0] != "OPT") return
 
-        val sessionId = parts[0]
-        val index = parts[1].toIntOrNull() ?: return
-        val total = parts[2].toIntOrNull() ?: return
-        val rawBase64 = parts[3]
+        val senderPinHash = parts[1]
+        val sessionId = parts[2]
+        val index = parts[3].toIntOrNull() ?: return
+        val total = parts[4].toIntOrNull() ?: return
+        val rawBase64 = parts[5]
 
+        val localPin = etPin.text.toString()
+        if (localPin.isBlank()) {
+            runOnUiThread {
+                tvStatus.text = "⚠️ أدخل رمز الأمان في هاتفك لمطابقة البث"
+                tvStatus.setTextColor(Color.parseColor("#EF4444"))
+            }
+            return
+        }
+
+        val localPinHash = CryptoManager.hashPin(localPin)
+        if (senderPinHash != localPinHash) {
+            runOnUiThread {
+                tvStatus.text = "❌ رمز الأمان غير متطابق مع الهاتف المرسل!"
+                tvStatus.setTextColor(Color.parseColor("#EF4444"))
+            }
+            return
+        }
+
+        // إذا تطابق الرمز، يبدأ الاستقبال وتجميع البيانات فوراً
         if (activeSessionId != sessionId) {
             activeSessionId = sessionId
             totalExpectedPackets = total
@@ -306,31 +366,27 @@ class MainActivity : AppCompatActivity() {
 
             runOnUiThread {
                 progressBar.progress = count
-                tvStatus.text = "تم التقاط: $count من أصل $totalExpectedPackets إطار"
+                tvStatus.text = "✅ الرمز متطابق! جاري التحميل: $count من أصل $totalExpectedPackets"
+                tvStatus.setTextColor(Color.parseColor("#10B981"))
             }
 
             if (count == totalExpectedPackets && !isDone) {
                 isDone = true
-                runOnUiThread { tvStatus.text = "اكتمل التجميع! جاري فك التشفير..." }
+                runOnUiThread { tvStatus.text = "اكتمل البث! جاري حفظ الملف..." }
                 decryptAndSaveFile()
             }
         }
     }
 
     private fun decryptAndSaveFile() {
-        val password = etPassword.text.toString()
-        if (password.isBlank()) {
-            runOnUiThread { Toast.makeText(this, "يرجى إدخال كلمة المرور لفك التشفير", Toast.LENGTH_LONG).show() }
-            return
-        }
-
+        val pin = etPin.text.toString()
         try {
             val stream = ByteArrayOutputStream()
             for (i in 0 until totalExpectedPackets) {
                 stream.write(receivedPackets[i]!!)
             }
 
-            val decrypted = CryptoManager.decrypt(stream.toByteArray(), password)
+            val decrypted = CryptoManager.decrypt(stream.toByteArray(), pin)
             val buffer = ByteBuffer.wrap(decrypted)
             val nameLength = buffer.int
             val nameBytes = ByteArray(nameLength)
@@ -342,12 +398,14 @@ class MainActivity : AppCompatActivity() {
 
             saveFileToDownloads(fileName, content)
             runOnUiThread {
-                tvStatus.text = "تم حفظ الملف بنجاح في التنزيلات:\n$fileName"
+                tvStatus.text = "🎉 تم الاستلام والحفظ في التنزيلات:\n$fileName"
+                tvStatus.setTextColor(Color.parseColor("#10B981"))
                 Toast.makeText(this, "اكتمل الاستلام بنجاح!", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             runOnUiThread {
-                tvStatus.text = "فشل فك التشفير: كلمة المرور غير صحيحة"
+                tvStatus.text = "فشل فك التشفير: الرمز غير متطابق"
+                tvStatus.setTextColor(Color.parseColor("#EF4444"))
                 isDone = false
             }
         }
@@ -367,7 +425,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        transmissionJob?.cancel()
+        stopSending()
         cameraExecutor.shutdown()
     }
 }

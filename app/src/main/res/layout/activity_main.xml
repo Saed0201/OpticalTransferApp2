@@ -4,59 +4,105 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#121212"
+    android:background="@color/bg_dark"
     android:padding="16dp">
-    <com.google.android.material.button.MaterialButtonToggleGroup
-        android:id="@+id/toggleMode"
+
+    <!-- شريط التبديل بين الإرسال والاستقبال -->
+    <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        app:singleSelection="true"
-        app:checkedButton="@id/btnModeSend">
-        <Button
-            android:id="@+id/btnModeSend"
-            style="?attr/materialButtonOutlinedStyle"
-            android:layout_width="0dp"
+        app:cardCornerRadius="16dp"
+        app:cardBackgroundColor="@color/card_bg"
+        app:cardElevation="4dp"
+        app:strokeWidth="0dp">
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/toggleMode"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="إرسال (شاشة)" />
-        <Button
-            android:id="@+id/btnModeReceive"
-            style="?attr/materialButtonOutlinedStyle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="استقبال (كاميرا)" />
-    </com.google.android.material.button.MaterialButtonToggleGroup>
-    <com.google.android.material.textfield.TextInputLayout
+            android:padding="4dp"
+            app:singleSelection="true"
+            app:checkedButton="@id/btnModeSend">
+
+            <Button
+                android:id="@+id/btnModeSend"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/text_white"
+                android:text="📤 إرسال ملف" />
+
+            <Button
+                android:id="@+id/btnModeReceive"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/text_white"
+                android:text="📥 استلام ملف" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- حقل الرمز السري المشترك -->
+    <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
-        android:hint="كلمة مرور التشفير (PIN أو نص)"
-        app:hintTextColor="#00E676"
-        app:boxStrokeColor="#00E676">
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/etPassword"
+        app:cardCornerRadius="14dp"
+        app:cardBackgroundColor="@color/card_bg"
+        app:strokeWidth="1dp"
+        app:strokeColor="#334155">
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:inputType="textPassword" />
-    </com.google.android.material.textfield.TextInputLayout>
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="رمز الأمان والمطابقة (PIN):"
+                android:textColor="@color/text_muted"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/etPin"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@null"
+                android:hint="أدخل رمزاً مطابقاً في الهاتفين (مثلاً: 1234)"
+                android:textColorHint="#64748B"
+                android:textColor="@color/accent_blue"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:inputType="textPassword" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- شريط الحالة والنتيجة -->
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="#00E676"
+        android:textColor="@color/accent_green"
         android:textSize="14sp"
+        android:textStyle="bold"
         android:textAlignment="center"
-        android:layout_marginTop="8dp"
-        android:text="وضع الإرسال: اختر ملفاً للبدء" />
+        android:layout_marginTop="10dp"
+        android:text="اختر ملفاً وحدد الرمز للبدء" />
+
     <ProgressBar
         android:id="@+id/progressBar"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="8dp"
+        android:progressDrawable="@android:drawable/progress_horizontal"
         android:visibility="gone"
-        android:layout_marginTop="4dp" />
+        android:layout_marginTop="6dp" />
+
+    <!-- قسم الإرسال -->
     <LinearLayout
         android:id="@+id/layoutSend"
         android:layout_width="match_parent"
@@ -65,29 +111,70 @@
         android:orientation="vertical"
         android:gravity="center"
         android:visibility="visible">
-        <Button
-            android:id="@+id/btnPickFile"
-            android:layout_width="wrap_content"
+
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="اختيار ملف وبدء البث" />
-        <ImageView
-            android:id="@+id/ivQrDisplay"
-            android:layout_width="320dp"
-            android:layout_height="320dp"
-            android:layout_marginTop="16dp"
-            android:background="#FFFFFF"
-            android:scaleType="fitCenter" />
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="8dp">
+
+            <Button
+                android:id="@+id/btnPickFile"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📁 اختيار ملف"
+                android:backgroundTint="@color/card_bg"
+                android:textColor="@color/text_white" />
+
+            <Button
+                android:id="@+id/btnStopSend"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="⏹ إيقاف البث"
+                android:backgroundTint="@color/accent_red"
+                android:textColor="@color/text_white"
+                android:enabled="false" />
+        </LinearLayout>
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="310dp"
+            android:layout_height="310dp"
+            app:cardCornerRadius="20dp"
+            app:cardBackgroundColor="#FFFFFF"
+            app:strokeWidth="3dp"
+            app:strokeColor="@color/accent_blue">
+
+            <ImageView
+                android:id="@+id/ivQrDisplay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:padding="8dp"
+                android:scaleType="fitCenter" />
+        </com.google.android.material.card.MaterialCardView>
     </LinearLayout>
+
+    <!-- قسم الاستقبال -->
     <FrameLayout
         android:id="@+id/layoutReceive"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:visibility="gone">
+
         <androidx.camera.view.PreviewView
             android:id="@+id/previewView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <!-- إطار توجيه الكاميرا -->
+        <View
+            android:layout_width="260dp"
+            android:layout_height="260dp"
+            android:layout_gravity="center"
+            android:background="@drawable/abc_cab_background_top_material"
+            android:alpha="0.3" />
     </FrameLayout>
 </LinearLayout>
