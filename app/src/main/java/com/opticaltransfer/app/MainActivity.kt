@@ -3,6 +3,7 @@ package com.opticaltransfer.app
 import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -11,6 +12,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -113,6 +117,11 @@ class MainActivity : AppCompatActivity() {
     private var activeSessionId: String? = null
     private var isDone = false
 
+    // حالات مطابقة الرمز وبدء النقل بعد ثانية
+    private var isPinMatched = false
+    private var isTransferStarted = false
+    private var delayJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -161,6 +170,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun triggerVibration(durationMs: Long = 150) {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMs)
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun switchToSendMode() {
         stopCamera()
         layoutReceive.visibility = View.GONE
@@ -173,6 +200,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun switchToReceiveMode() {
         stopSending()
+        resetReceiveState()
         layoutSend.visibility = View.GONE
         layoutReceive.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
@@ -186,6 +214,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 101)
         }
+    }
+
+    private fun resetReceiveState() {
+        isPinMatched = false
+        isTransferStarted = false
+        delayJob?.cancel()
+        delayJob = null
+        receivedPackets.clear()
+        totalExpectedPackets = -1
+        activeSessionId = null
+        isDone = false
+        progressBar.progress = 0
     }
 
     private fun setScreenBrightness(value: Float) {
@@ -214,7 +254,6 @@ class MainActivity : AppCompatActivity() {
             }
             val encryptedData = CryptoManager.encrypt(packedStream.toByteArray(), pin)
 
-            // حجم كتلة خفيف لإنتاج كود QR قليل التعقيد وسهل المسح
             val chunkSize = 120
             val totalChunks = ceil(encryptedData.size.toDouble() / chunkSize).toInt()
             val fileId = UUID.randomUUID().toString().substring(0, 4)
@@ -236,12 +275,11 @@ class MainActivity : AppCompatActivity() {
                     val chunk = encryptedData.copyOfRange(from, to)
                     val encodedPayload = Base64.encodeToString(chunk, Base64.NO_WRAP)
 
-                    // البنية: OPT | رمز المطابقة | معرف الملف | الرقم | الإجمالي | البيانات
                     val packet = "OPT|$pinHash|$fileId|$index|$totalChunks|$encodedPayload"
                     val bmp = generateQrBitmap(packet, hints)
 
                     withContext(Dispatchers.Main) { ivQrDisplay.setImageBitmap(bmp) }
-                    delay(220) // معدل عرض مستقر لقراءة الكاميرا بدقة
+                    delay(220)
                 }
             }
         }
@@ -333,7 +371,7 @@ class MainActivity : AppCompatActivity() {
         val localPin = etPin.text.toString()
         if (localPin.isBlank()) {
             runOnUiThread {
-                tvStatus.text = "⚠️ أدخل رمز الأمان في هاتفك لمطابقة البث"
+                tvStatus.text = "⚠️ أدخل رمز الأمان في هاتفك أولاً"
                 tvStatus.setTextColor(Color.parseColor("#EF4444"))
             }
             return
@@ -348,31 +386,56 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // إذا تطابق الرمز، يبدأ الاستقبال وتجميع البيانات فوراً
+        // عند حدوث جلسة جديدة أو أول مطابقة للرمز
         if (activeSessionId != sessionId) {
             activeSessionId = sessionId
             totalExpectedPackets = total
             receivedPackets.clear()
             isDone = false
+            isPinMatched = false
+            isTransferStarted = false
+        }
+
+        // إشعار مطابقة الرمز + الانتظار لمدة ثانية كاملة قبل بدء استقبال وتخزين الحزم
+        if (!isPinMatched) {
+            isPinMatched = true
             runOnUiThread {
-                progressBar.max = total
+                triggerVibration(200)
+                Toast.makeText(this, "تمت مطابقة الرمز بنجاح! جاري بدء النقل...", Toast.LENGTH_SHORT).show()
+                tvStatus.text = "🔔 تم مطابقة الرمز! بدء النقل خلال ثانية..."
+                tvStatus.setTextColor(Color.parseColor("#38BDF8"))
+                progressBar.max = 100
                 progressBar.progress = 0
             }
+
+            delayJob?.cancel()
+            delayJob = lifecycleScope.launch(Dispatchers.Main) {
+                delay(1000)
+                isTransferStarted = true
+            }
+            return
         }
+
+        // لا نبدأ النقل والتسجيل إلا بعد انتهاء الثانية
+        if (!isTransferStarted) return
 
         if (!receivedPackets.containsKey(index)) {
             receivedPackets[index] = Base64.decode(rawBase64, Base64.NO_WRAP)
             val count = receivedPackets.size
+            val percentage = (count * 100) / totalExpectedPackets
 
             runOnUiThread {
-                progressBar.progress = count
-                tvStatus.text = "✅ الرمز متطابق! جاري التحميل: $count من أصل $totalExpectedPackets"
+                progressBar.progress = percentage
+                tvStatus.text = "📥 جاري النقل: $percentage% ($count / $totalExpectedPackets إطار)"
                 tvStatus.setTextColor(Color.parseColor("#10B981"))
             }
 
             if (count == totalExpectedPackets && !isDone) {
                 isDone = true
-                runOnUiThread { tvStatus.text = "اكتمل البث! جاري حفظ الملف..." }
+                runOnUiThread {
+                    triggerVibration(300)
+                    tvStatus.text = "اكتمل التجميع 100%! جاري حفظ الملف..."
+                }
                 decryptAndSaveFile()
             }
         }
@@ -398,9 +461,10 @@ class MainActivity : AppCompatActivity() {
 
             saveFileToDownloads(fileName, content)
             runOnUiThread {
-                tvStatus.text = "🎉 تم الاستلام والحفظ في التنزيلات:\n$fileName"
+                triggerVibration(400)
+                tvStatus.text = "🎉 تم الاستلام 100% وحفظ في التنزيلات:\n$fileName"
                 tvStatus.setTextColor(Color.parseColor("#10B981"))
-                Toast.makeText(this, "اكتمل الاستلام بنجاح!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "اكتمل الاستلام بنجاح!", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
             runOnUiThread {
@@ -426,6 +490,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopSending()
+        delayJob?.cancel()
         cameraExecutor.shutdown()
     }
 }
