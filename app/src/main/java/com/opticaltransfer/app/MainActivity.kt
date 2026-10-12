@@ -23,6 +23,7 @@ import android.view.WindowManager
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -112,15 +113,14 @@ class MainActivity : AppCompatActivity() {
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val barcodeScanner = BarcodeScanning.getClient()
 
+    // حالة الاستقبال والنقل
     private val receivedPackets = mutableMapOf<Int, ByteArray>()
     private var totalExpectedPackets = -1
     private var activeSessionId: String? = null
     private var isDone = false
 
-    // حالات مطابقة الرمز وبدء النقل بعد ثانية
-    private var isPinMatched = false
-    private var isTransferStarted = false
-    private var delayJob: Job? = null
+    private var isDialogShowing = false
+    private var isTransferApproved = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
 
         btnPickFile.setOnClickListener {
             if (etPin.text.isNullOrBlank()) {
-                Toast.makeText(this, "يرجى إدخال رمز الأمان (PIN) أولاً", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "يرجى كتابة رمز الأمان (PIN) أولاً", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -217,10 +217,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun resetReceiveState() {
-        isPinMatched = false
-        isTransferStarted = false
-        delayJob?.cancel()
-        delayJob = null
+        isDialogShowing = false
+        isTransferApproved = false
         receivedPackets.clear()
         totalExpectedPackets = -1
         activeSessionId = null
@@ -254,7 +252,7 @@ class MainActivity : AppCompatActivity() {
             }
             val encryptedData = CryptoManager.encrypt(packedStream.toByteArray(), pin)
 
-            val chunkSize = 120
+            val chunkSize = 110
             val totalChunks = ceil(encryptedData.size.toDouble() / chunkSize).toInt()
             val fileId = UUID.randomUUID().toString().substring(0, 4)
 
@@ -279,7 +277,7 @@ class MainActivity : AppCompatActivity() {
                     val bmp = generateQrBitmap(packet, hints)
 
                     withContext(Dispatchers.Main) { ivQrDisplay.setImageBitmap(bmp) }
-                    delay(220)
+                    delay(240)
                 }
             }
         }
@@ -378,47 +376,72 @@ class MainActivity : AppCompatActivity() {
         }
 
         val localPinHash = CryptoManager.hashPin(localPin)
+
+        // 1. حالة عدم تطابق الرمز
         if (senderPinHash != localPinHash) {
             runOnUiThread {
-                tvStatus.text = "❌ رمز الأمان غير متطابق مع الهاتف المرسل!"
+                tvStatus.text = "❌ الرمز غير مطابق! تأكد من إدخال نفس الرمز"
                 tvStatus.setTextColor(Color.parseColor("#EF4444"))
+                if (!isDialogShowing) {
+                    isDialogShowing = true
+                    triggerVibration(100)
+                    AlertDialog.Builder(this)
+                        .setTitle("تنبيه: الرمز غير مطابق ❌")
+                        .setMessage("الرمز السري المدخل في هذا الهاتف لا يطابق رمز الهاتف المرسل.\nيرجى تصحيح الرمز للمتابعة.")
+                        .setPositiveButton("حسناً") { d, _ ->
+                            d.dismiss()
+                            isDialogShowing = false
+                        }
+                        .setCancelable(false)
+                        .show()
+                }
             }
             return
         }
 
-        // عند حدوث جلسة جديدة أو أول مطابقة للرمز
+        // 2. حالة بدء جلسة جديدة
         if (activeSessionId != sessionId) {
             activeSessionId = sessionId
             totalExpectedPackets = total
             receivedPackets.clear()
             isDone = false
-            isPinMatched = false
-            isTransferStarted = false
+            isTransferApproved = false
         }
 
-        // إشعار مطابقة الرمز + الانتظار لمدة ثانية كاملة قبل بدء استقبال وتخزين الحزم
-        if (!isPinMatched) {
-            isPinMatched = true
-            runOnUiThread {
-                triggerVibration(200)
-                Toast.makeText(this, "تمت مطابقة الرمز بنجاح! جاري بدء النقل...", Toast.LENGTH_SHORT).show()
-                tvStatus.text = "🔔 تم مطابقة الرمز! بدء النقل خلال ثانية..."
-                tvStatus.setTextColor(Color.parseColor("#38BDF8"))
-                progressBar.max = 100
-                progressBar.progress = 0
-            }
+        // 3. حالة تطابق الرمز: إشعار وسؤال المستخدم (هل يبدأ؟)
+        if (!isTransferApproved) {
+            if (!isDialogShowing) {
+                isDialogShowing = true
+                runOnUiThread {
+                    triggerVibration(250)
+                    tvStatus.text = "✅ الرمز مطابق! بانتظار الموافقة على البدء..."
+                    tvStatus.setTextColor(Color.parseColor("#38BDF8"))
 
-            delayJob?.cancel()
-            delayJob = lifecycleScope.launch(Dispatchers.Main) {
-                delay(1000)
-                isTransferStarted = true
+                    AlertDialog.Builder(this)
+                        .setTitle("تمت مطابقة الرمز بنجاح ✅")
+                        .setMessage("تم التحقق من المرسل بنجاح ومطابقة الرمز السري.\nهل تريد بدء استلام الملف الآن؟")
+                        .setPositiveButton("نعم (ابدأ)") { d, _ ->
+                            d.dismiss()
+                            isDialogShowing = false
+                            isTransferApproved = true
+                            progressBar.max = 100
+                            progressBar.progress = 0
+                            tvStatus.text = "📥 جاري بدء النقل..."
+                            tvStatus.setTextColor(Color.parseColor("#10B981"))
+                        }
+                        .setNegativeButton("إلغاء") { d, _ ->
+                            d.dismiss()
+                            isDialogShowing = false
+                            resetReceiveState()
+                        }
+                        .setCancelable(false)
+                        .show()
+                }
             }
             return
         }
 
-        // لا نبدأ النقل والتسجيل إلا بعد انتهاء الثانية
-        if (!isTransferStarted) return
-
+        // 4. بعد الموافقة: بدء تجميع الحزم وحساب نسبة الاستلام %
         if (!receivedPackets.containsKey(index)) {
             receivedPackets[index] = Base64.decode(rawBase64, Base64.NO_WRAP)
             val count = receivedPackets.size
@@ -426,7 +449,7 @@ class MainActivity : AppCompatActivity() {
 
             runOnUiThread {
                 progressBar.progress = percentage
-                tvStatus.text = "📥 جاري النقل: $percentage% ($count / $totalExpectedPackets إطار)"
+                tvStatus.text = "📥 نسبة الاستلام: $percentage% ($count من أصل $totalExpectedPackets إطار)"
                 tvStatus.setTextColor(Color.parseColor("#10B981"))
             }
 
@@ -434,7 +457,7 @@ class MainActivity : AppCompatActivity() {
                 isDone = true
                 runOnUiThread {
                     triggerVibration(300)
-                    tvStatus.text = "اكتمل التجميع 100%! جاري حفظ الملف..."
+                    tvStatus.text = "اكتمل الاستلام 100%! جاري فك التشفير وحفظ الملف..."
                 }
                 decryptAndSaveFile()
             }
@@ -461,10 +484,15 @@ class MainActivity : AppCompatActivity() {
 
             saveFileToDownloads(fileName, content)
             runOnUiThread {
-                triggerVibration(400)
-                tvStatus.text = "🎉 تم الاستلام 100% وحفظ في التنزيلات:\n$fileName"
+                triggerVibration(500)
+                tvStatus.text = "🎉 تم الاستلام 100% وحُفظ في التنزيلات:\n$fileName"
                 tvStatus.setTextColor(Color.parseColor("#10B981"))
-                Toast.makeText(this, "اكتمل الاستلام بنجاح!", Toast.LENGTH_LONG).show()
+
+                AlertDialog.Builder(this)
+                    .setTitle("اكتمل النقل بنجاح 🎉")
+                    .setMessage("تم استلام الملف كاملاً بنسبة 100% وفك تشفيره وحفظه بنجاح:\n$fileName")
+                    .setPositiveButton("تم") { d, _ -> d.dismiss() }
+                    .show()
             }
         } catch (e: Exception) {
             runOnUiThread {
@@ -490,7 +518,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopSending()
-        delayJob?.cancel()
         cameraExecutor.shutdown()
     }
 }
