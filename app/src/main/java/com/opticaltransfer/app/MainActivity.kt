@@ -43,7 +43,6 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.math.ceil
 
-// 1. كائن التشفير المدمج (AES-256-GCM)
 object CryptoManager {
     private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val TAG_LENGTH_BIT = 128
@@ -82,7 +81,6 @@ object CryptoManager {
     }
 }
 
-// 2. النشاط الرئيسي لإدارة الإرسال والاستقبال عبر الكاميرا الخلفية
 class MainActivity : AppCompatActivity() {
 
     private lateinit var toggleMode: MaterialButtonToggleGroup
